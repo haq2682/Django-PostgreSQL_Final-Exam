@@ -373,7 +373,7 @@ jobs:
       
       - name: Verify all.yml and validate
         run: |
-          if [ !  -f all.yml ]; then
+          if [ !-f all.yml ]; then
             echo "❌ Error: all.yml not found!"
             exit 1
           fi
@@ -529,7 +529,7 @@ jobs:
             PROM_URL=$(kubectl get svc prometheus-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             GRAFANA_URL=$(kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             
-            if [ !  -z "$PROM_URL" ] && [ ! -z "$GRAFANA_URL" ]; then
+            if [ !-z "$PROM_URL" ] && [ ! -z "$GRAFANA_URL" ]; then
               echo "PROM_URL=$PROM_URL" >> $GITHUB_ENV
               echo "GRAFANA_URL=$GRAFANA_URL" >> $GITHUB_ENV
               echo "✓ Prometheus URL: http://$PROM_URL:9090"

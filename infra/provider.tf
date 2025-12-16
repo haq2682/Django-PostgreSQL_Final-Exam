@@ -7,6 +7,14 @@ terraform {
       version = "~> 5.31"
     }
   }
+
+  backend "s3" {
+    bucket         = "my-terraform-states-django-app-us-east-1"
+    key            = "prod/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
 }
 
 provider "aws" {

@@ -257,13 +257,13 @@ jobs:
   
   terraform-apply:
     runs-on: ubuntu-latest
-    needs: build-push-docker
+    needs:  build-push-docker
     if: github.ref == 'refs/heads/main'
-    defaults:
-      run: 
+    defaults: 
+      run:  
         working-directory: ./infra
     steps:
-      - uses: actions/checkout@v4
+      - uses:  actions/checkout@v4
       
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -272,10 +272,11 @@ jobs:
       
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
-        with: 
+        with:  
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+      
       - name: Setup Terraform Backend
         run: |
           # Check if bucket exists, create if it doesn't
@@ -321,21 +322,20 @@ jobs:
           else
             echo "✓ DynamoDB table already exists"
           fi
-            
-            - name: Terraform Init
-              run: terraform init
-            
-            - name: Terraform Validate
-              run: terraform validate
-            
-            - name: Terraform Plan
-              run: terraform plan -out=tfplan
-              env:
-                TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
-            
-            - name: Terraform Apply
-              run: terraform apply -auto-approve tfplan
-
+      
+      - name: Terraform Init
+        run: terraform init
+      
+      - name:  Terraform Validate
+        run:  terraform validate
+      
+      - name: Terraform Plan
+        run:  terraform plan -out=tfplan
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+      
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
   ansible-deploy:
     runs-on: ubuntu-latest
     needs: terraform-apply

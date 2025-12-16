@@ -226,18 +226,35 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
       
+      - name: Create ECR repository if it doesn't exist
+        run: |
+          # Check if the ECR repository exists, create it if it doesn't
+          if ! aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }} > /dev/null 2>&1; then
+            echo "❌ Repository ${ECR_REPOSITORY} does not exist. Creating it now."
+            aws ecr create-repository --repository-name ${{ env.ECR_REPOSITORY }} --region ${{ env.AWS_REGION }}
+          else
+            echo "✓ Repository ${ECR_REPOSITORY} already exists."
+          fi
+  
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
-      
-      - name: Build and push Docker image
+  
+      - name: Build Docker image (with debug)
         env: 
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG .
+          # Add --debug for more verbose output during Docker build
+          docker build --debug -t $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG .
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+  
+      - name: Push Docker image to ECR
+        env: 
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
 
   terraform-apply:
     runs-on: ubuntu-latest

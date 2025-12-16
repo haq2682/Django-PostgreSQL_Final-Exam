@@ -26,7 +26,7 @@ jobs:
           # Check Ansible files
           echo "Checking Ansible files..."
           required_ansible_files=(
-            "ansible/all.yml"
+            "ansible/group_vars/all.yml"
             "ansible/playbook.yaml"
             "ansible/monitoring.yaml"
             "ansible/requirements.yml"

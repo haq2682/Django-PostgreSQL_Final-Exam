@@ -1,0 +1,136 @@
+---
+- name: Deploy Prometheus and Grafana Monitoring
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars_files:
+    - all.yml
+
+  vars:
+    monitoring_namespace: monitoring
+    terraform_dir: "../infra"
+    k8s_manifests_dir: "../k8s"
+
+  tasks:
+    - name: Display monitoring deployment info
+      debug:
+        msg:
+          - "Deploying Prometheus and Grafana"
+          - "Namespace: {{ monitoring_namespace }}"
+          - "Region: {{ aws_region }}"
+
+    - name: Get Terraform outputs
+      shell: |
+        cd {{ terraform_dir }}
+        terraform output -json
+      register: terraform_output
+      changed_when: false
+      failed_when: false
+
+    - name: Parse EKS cluster name
+      set_fact:
+        eks_cluster_name: "{{ (terraform_output.stdout | from_json).eks_cluster_name.value }}"
+      when: terraform_output.stdout is defined and terraform_output.stdout != ""
+
+    - name: Configure kubectl
+      shell: |
+        aws eks update-kubeconfig --region {{ aws_region }} --name {{ eks_cluster_name }}
+      changed_when: false
+      when: eks_cluster_name is defined
+
+    - name: Create namespaces (includes monitoring)
+      command: kubectl apply -f {{ k8s_manifests_dir }}/namespace.yaml
+      register: ns_result
+
+    - name: Display namespace result
+      debug:
+        var: ns_result.stdout_lines
+
+    - name: Wait for monitoring namespace to be active
+      shell: |
+        kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/{{ monitoring_namespace }} --timeout=30s
+      register: namespace_wait
+      changed_when: false
+      failed_when: false
+
+    - name: Apply ConfigMap (includes prometheus-config)
+      command: kubectl apply -f {{ k8s_manifests_dir }}/configmap.yaml
+      register: configmap_result
+
+    - name: Display ConfigMap result
+      debug:
+        var: configmap_result.stdout_lines
+
+    - name: Apply monitoring deployment
+      command: kubectl apply -f {{ k8s_manifests_dir }}/deployment-monitoring.yaml
+      register: monitoring_result
+
+    - name: Display monitoring deployment result
+      debug:
+        var: monitoring_result.stdout_lines
+
+    - name: Wait for Prometheus to be ready
+      shell: |
+        kubectl wait --for=condition=available --timeout=180s deployment/prometheus -n {{ monitoring_namespace }}
+      register: prometheus_status
+      retries: 3
+      delay: 10
+
+    - name: Display Prometheus status
+      debug:
+        msg: "✓ Prometheus is ready"
+      when: prometheus_status.rc == 0
+
+    - name: Wait for Grafana to be ready
+      shell: |
+        kubectl wait --for=condition=available --timeout=180s deployment/grafana -n {{ monitoring_namespace }}
+      register: grafana_status
+      retries: 3
+      delay: 10
+
+    - name: Display Grafana status
+      debug:
+        msg: "✓ Grafana is ready"
+      when: grafana_status.rc == 0
+
+    - name: Get Prometheus LoadBalancer URL
+      shell: |
+        kubectl get svc prometheus-service -n {{ monitoring_namespace }} \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+      register: prometheus_lb
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: prometheus_lb.stdout != ""
+
+    - name: Get Grafana LoadBalancer URL
+      shell: |
+        kubectl get svc grafana-service -n {{ monitoring_namespace }} \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+      register: grafana_lb
+      changed_when: false
+      retries: 10
+      delay: 15
+      until: grafana_lb.stdout != ""
+
+    - name: Get Grafana admin password
+      shell: |
+        kubectl get secret grafana-credentials -n {{ monitoring_namespace }} \
+          -o jsonpath='{.data.admin-password}' | base64 --decode
+      register: grafana_password
+      changed_when: false
+
+    - name: Monitoring Deployment Summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Monitoring Stack Deployed Successfully"
+          - "=========================================="
+          - "Prometheus URL: http://{{ prometheus_lb.stdout }}: 9090"
+          - "Grafana URL: http://{{ grafana_lb.stdout }}:3000"
+          - "Grafana Username: admin"
+          - "Grafana Password: {{ grafana_password.stdout }}"
+          - "=========================================="
+          - "Prometheus Targets: http://{{ prometheus_lb.stdout }}:9090/targets"
+          - "Prometheus Config: Monitoring both dev and prod namespaces"
+          - "=========================================="

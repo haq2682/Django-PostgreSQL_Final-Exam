@@ -1,0 +1,629 @@
+name: CI/CD Pipeline
+
+on: 
+  push: 
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env: 
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: django-eks-cluster
+  ECR_REPOSITORY: django-app
+  DOCKER_IMAGE_TAG: ${{ github.sha }}
+  DEPLOY_ENV: prod  # Change to 'dev' for development deployment
+
+jobs:
+  validate-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate required files exist
+        run: |
+          echo "=== Validating File Structure ==="
+          
+          # Check Ansible files
+          echo "Checking Ansible files..."
+          required_ansible_files=(
+            "ansible/all.yml"
+            "ansible/playbook.yaml"
+            "ansible/monitoring.yaml"
+            "ansible/requirements.yml"
+          )
+          
+          for file in "${required_ansible_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing: $file"
+              exit 1
+            else
+              echo "✓ Found: $file"
+            fi
+          done
+          
+          # Check K8s files
+          echo ""
+          echo "Checking Kubernetes files..."
+          required_k8s_files=(
+            "k8s/namespace.yaml"
+            "k8s/configmap.yaml"
+            "k8s/deployment-dev.yaml"
+            "k8s/deployment-prod.yaml"
+            "k8s/deployment-monitoring.yaml"
+          )
+          
+          for file in "${required_k8s_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing: $file"
+              exit 1
+            else
+              echo "✓ Found: $file"
+            fi
+          done
+          
+          # Validate K8s YAML syntax
+          echo ""
+          echo "Validating YAML syntax..."
+          pip install pyyaml
+          for file in k8s/*.yaml; do
+            python -c "import yaml; yaml.safe_load_all(open('$file'))" && echo "✓ Valid YAML: $file" || exit 1
+          done
+          
+          echo ""
+          echo "=== All files validated successfully ==="
+      
+      - name: Verify K8s file contents
+        run: |
+          echo "=== Verifying K8s Configurations ==="
+          
+          # Check namespaces
+          echo "Checking namespaces in namespace.yaml..."
+          if grep -q "name: django-app-dev" k8s/namespace.yaml && \
+             grep -q "name: django-app-prod" k8s/namespace.yaml && \
+             grep -q "name: monitoring" k8s/namespace.yaml; then
+            echo "✓ All required namespaces found"
+          else
+            echo "❌ Missing required namespaces"
+            exit 1
+          fi
+          
+          # Check ConfigMap
+          echo "Checking ConfigMap..."
+          if grep -q "name: django-config" k8s/configmap.yaml && \
+             grep -q "name: prometheus-config" k8s/configmap.yaml; then
+            echo "✓ Required ConfigMaps found"
+          else
+            echo "❌ Missing required ConfigMaps"
+            exit 1
+          fi
+          
+          # Check dev deployment
+          echo "Checking dev deployment..."
+          if grep -q "namespace: django-app-dev" k8s/deployment-dev.yaml && \
+             grep -q "app: django-app" k8s/deployment-dev.yaml && \
+             grep -q "app: redis" k8s/deployment-dev.yaml; then
+            echo "✓ Dev deployment structure correct"
+          else
+            echo "❌ Dev deployment structure incorrect"
+            exit 1
+          fi
+          
+          # Check prod deployment
+          echo "Checking prod deployment..."
+          if grep -q "namespace: django-app-prod" k8s/deployment-prod.yaml && \
+             grep -q "app: django-app" k8s/deployment-prod.yaml && \
+             grep -q "app: redis" k8s/deployment-prod.yaml; then
+            echo "✓ Prod deployment structure correct"
+          else
+            echo "❌ Prod deployment structure incorrect"
+            exit 1
+          fi
+          
+          # Check monitoring deployment
+          echo "Checking monitoring deployment..."
+          if grep -q "namespace: monitoring" k8s/deployment-monitoring.yaml && \
+             grep -q "app: prometheus" k8s/deployment-monitoring.yaml && \
+             grep -q "app: grafana" k8s/deployment-monitoring.yaml; then
+            echo "✓ Monitoring deployment structure correct"
+          else
+            echo "❌ Monitoring deployment structure incorrect"
+            exit 1
+          fi
+          
+          # Verify monitoring is NOT in dev/prod deployments
+          echo "Verifying monitoring separation..."
+          if grep -q "app: prometheus" k8s/deployment-dev.yaml || \
+             grep -q "app: grafana" k8s/deployment-dev.yaml || \
+             grep -q "app: prometheus" k8s/deployment-prod.yaml || \
+             grep -q "app: grafana" k8s/deployment-prod.yaml; then
+            echo "❌ Monitoring resources found in dev/prod deployments (should be separate)"
+            exit 1
+          else
+            echo "✓ Monitoring properly separated"
+          fi
+          
+          echo ""
+          echo "=== All K8s configurations verified ==="
+
+  build-install: 
+    runs-on: ubuntu-latest
+    needs: validate-files
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with: 
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      
+      - run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+  lint-security:
+    runs-on: ubuntu-latest
+    needs: build-install
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with: 
+          python-version: '3.11'
+      
+      - run: |
+          pip install flake8 bandit
+          flake8 .--max-line-length=120 --exclude=migrations,venv || true
+          bandit -r . -x ./venv,./tests || true
+
+  test: 
+    runs-on: ubuntu-latest
+    needs: lint-security
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env: 
+          POSTGRES_DB: carsdb
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports: 
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    
+    steps: 
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - run: pip install -r requirements.txt
+      
+      - run: python manage.py test
+        env:
+          DB_NAME: carsdb
+          DB_USER: test_user
+          DB_PASSWORD: test_password
+          DB_HOST: localhost
+          DB_PORT: 5432
+
+  build-push-docker:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with: 
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Build and push Docker image
+        env: 
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY: $DOCKER_IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+  terraform-apply:
+    runs-on: ubuntu-latest
+    needs: build-push-docker
+    if: github.ref == 'refs/heads/main'
+    defaults:
+      run: 
+        working-directory: ./infra
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.0
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with: 
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Terraform Init
+        run: terraform init
+      
+      - name: Terraform Validate
+        run: terraform validate
+      
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+      
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+
+  ansible-deploy:
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main'
+    defaults: 
+      run: 
+        working-directory: ./ansible
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with: 
+          python-version: '3.11'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install Ansible and dependencies
+        run: |
+          pip install ansible kubernetes boto3 botocore
+          ansible-galaxy collection install -r requirements.yml
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with: 
+          version: 'v1.29.0'
+      
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      - name: Verify all.yml and validate
+        run: |
+          if [ !  -f all.yml ]; then
+            echo "❌ Error: all.yml not found!"
+            exit 1
+          fi
+          echo "✓ all.yml found"
+          echo ""
+          echo "=== all.yml contents ==="
+          cat all.yml
+          echo ""
+          
+          # Validate required variables
+          required_vars=("aws_region" "project_name" "db_name" "db_user" "db_host" "redis_host")
+          for var in "${required_vars[@]}"; do
+            if grep -q "^${var}:" all.yml; then
+              echo "✓ Found variable: $var"
+            else
+              echo "❌ Missing variable: $var"
+              exit 1
+            fi
+          done
+      
+      - name: Verify K8s files are accessible
+        run: |
+          echo "Checking K8s files from ansible directory..."
+          ls -la ../k8s/
+          
+          required_files=(
+            "namespace.yaml"
+            "configmap.yaml"
+            "deployment-${{ env.DEPLOY_ENV }}.yaml"
+          )
+          
+          for file in "${required_files[@]}"; do
+            if [ ! -f "../k8s/$file" ]; then
+              echo "❌ Missing: ../k8s/$file"
+              exit 1
+            else
+              echo "✓ Found: ../k8s/$file"
+            fi
+          done
+      
+      - name: Run Ansible playbook
+        run: ansible-playbook playbook.yaml -e "deploy_env=${{ env.DEPLOY_ENV }}"
+        env: 
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          ANSIBLE_FORCE_COLOR: 'true'
+      
+      - name: Verify deployment
+        run: |
+          echo "=== Verifying Django deployment ==="
+          kubectl get all -n django-app-${{ env.DEPLOY_ENV }}
+          
+          # Check if deployments are ready
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/django-app -n django-app-${{ env.DEPLOY_ENV }} || true
+          kubectl wait --for=condition=available --timeout=120s \
+            deployment/redis -n django-app-${{ env.DEPLOY_ENV }} || true
+
+  monitoring-setup:
+    runs-on: ubuntu-latest
+    needs: ansible-deploy
+    if: github.ref == 'refs/heads/main'
+    defaults: 
+      run: 
+        working-directory: ./ansible
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with: 
+          python-version: '3.11'
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with: 
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Install Ansible and dependencies
+        run: |
+          pip install ansible kubernetes boto3 botocore
+          ansible-galaxy collection install -r requirements.yml
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with: 
+          version: 'v1.29.0'
+      
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      - name: Verify monitoring K8s files
+        run: |
+          echo "Checking monitoring deployment file..."
+          if [ ! -f "../k8s/deployment-monitoring.yaml" ]; then
+            echo "❌ Missing: ../k8s/deployment-monitoring.yaml"
+            exit 1
+          fi
+          echo "✓ Found: ../k8s/deployment-monitoring.yaml"
+          
+          # Verify it contains required resources
+          if grep -q "app: prometheus" ../k8s/deployment-monitoring.yaml && \
+             grep -q "app: grafana" ../k8s/deployment-monitoring.yaml; then
+            echo "✓ Monitoring deployment file structure correct"
+          else
+            echo "❌ Monitoring deployment file missing required resources"
+            exit 1
+          fi
+      
+      - name: Deploy Monitoring Stack
+        run: ansible-playbook monitoring.yaml
+        env:
+          ANSIBLE_FORCE_COLOR: 'true'
+      
+      - name: Verify monitoring deployment
+        run: |
+          echo "=== Verifying Monitoring deployment ==="
+          kubectl get all -n monitoring
+          
+          # Check if deployments are ready
+          kubectl wait --for=condition=available --timeout=180s \
+            deployment/prometheus -n monitoring || true
+          kubectl wait --for=condition=available --timeout=180s \
+            deployment/grafana -n monitoring || true
+
+  verify-monitoring: 
+    runs-on: ubuntu-latest
+    needs: monitoring-setup
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with: 
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with: 
+          version: 'v1.29.0'
+      
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      - name: Wait for monitoring services
+        run: |
+          echo "=== Waiting for monitoring services ==="
+          for i in {1..20}; do
+            PROM_URL=$(kubectl get svc prometheus-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            GRAFANA_URL=$(kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            
+            if [ !  -z "$PROM_URL" ] && [ ! -z "$GRAFANA_URL" ]; then
+              echo "PROM_URL=$PROM_URL" >> $GITHUB_ENV
+              echo "GRAFANA_URL=$GRAFANA_URL" >> $GITHUB_ENV
+              echo "✓ Prometheus URL: http://$PROM_URL:9090"
+              echo "✓ Grafana URL: http://$GRAFANA_URL:3000"
+              break
+            fi
+            echo "Waiting for LoadBalancers... (attempt $i/20)"
+            sleep 15
+          done
+      
+      - name: Verify Prometheus
+        if: env.PROM_URL != ''
+        run: |
+          echo "Checking Prometheus health..."
+          for i in {1..10}; do
+            if curl -f -s --max-time 10 http://${{ env.PROM_URL }}:9090/-/healthy > /dev/null 2>&1; then
+              echo "✓ Prometheus is healthy"
+              exit 0
+            fi
+            echo "Waiting for Prometheus...(attempt $i/10)"
+            sleep 15
+          done
+          echo "⚠ Prometheus health check timeout"
+      
+      - name: Verify Grafana
+        if: env.GRAFANA_URL != ''
+        run: |
+          echo "Checking Grafana health..."
+          for i in {1..10}; do
+            if curl -f -s --max-time 10 http://${{ env.GRAFANA_URL }}:3000/api/health > /dev/null 2>&1; then
+              echo "✓ Grafana is healthy"
+              exit 0
+            fi
+            echo "Waiting for Grafana...(attempt $i/10)"
+            sleep 15
+          done
+          echo "⚠ Grafana health check timeout"
+      
+      - name: Display monitoring info
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "=== Monitoring Stack Status ==="
+          echo "=========================================="
+          kubectl get all -n monitoring
+          echo ""
+          echo "=== Prometheus Details ==="
+          kubectl describe svc prometheus-service -n monitoring
+          echo ""
+          echo "=== Grafana Details ==="
+          kubectl describe svc grafana-service -n monitoring
+          echo ""
+          echo "=== Prometheus Pods ==="
+          kubectl get pods -n monitoring -l app=prometheus -o wide
+          echo ""
+          echo "=== Grafana Pods ==="
+          kubectl get pods -n monitoring -l app=grafana -o wide
+          echo "=========================================="
+
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: verify-monitoring
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with: 
+          version: 'v1.29.0'
+      
+      - name: Configure kubectl
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+      
+      - name: Wait for LoadBalancer
+        run: |
+          echo "=== Waiting for Django LoadBalancer ==="
+          for i in {1..20}; do
+            LB_URL=$(kubectl get svc django-app-service -n django-app-${{ env.DEPLOY_ENV }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ ! -z "$LB_URL" ]; then
+              echo "LB_URL=$LB_URL" >> $GITHUB_ENV
+              echo "✓ LoadBalancer URL: http://$LB_URL"
+              break
+            fi
+            echo "Waiting for LoadBalancer...(attempt $i/20)"
+            sleep 15
+          done
+      
+      - name: Check pod status
+        run: |
+          echo "=== Django Pod Status ==="
+          kubectl get pods -n django-app-${{ env.DEPLOY_ENV }} -l app=django-app
+          kubectl get pods -n django-app-${{ env.DEPLOY_ENV }} -l app=redis
+          echo ""
+          echo "=== Service Status ==="
+          kubectl get svc -n django-app-${{ env.DEPLOY_ENV }}
+      
+      - name: Health check
+        run: |
+          if [ ! -z "${{ env.LB_URL }}" ]; then
+            echo "Testing Django application at http://${{ env.LB_URL }}"
+            for i in {1..15}; do
+              HTTP_CODE=$(curl -f -s -o /dev/null -w "%{http_code}" --max-time 10 http://${{ env.LB_URL }} 2>/dev/null || echo "000")
+              if echo "$HTTP_CODE" | grep -qE "200|301|302"; then
+                echo "✓ Health check PASSED with HTTP code: $HTTP_CODE"
+                exit 0
+              fi
+              echo "Waiting for application...(attempt $i/15, HTTP: $HTTP_CODE)"
+              sleep 20
+            done
+            echo "❌ Health check failed after 15 attempts"
+            exit 1
+          else
+            echo "❌ LoadBalancer URL not available"
+            kubectl get pods -n django-app-${{ env.DEPLOY_ENV }}
+            kubectl describe svc django-app-service -n django-app-${{ env.DEPLOY_ENV }}
+            exit 1
+          fi
+          
+      - name: Check metrics endpoint
+        if: env.LB_URL != ''
+        run: |
+          echo "Checking Prometheus metrics endpoint..."
+          HTTP_CODE=$(curl -f -s -o /dev/null -w "%{http_code}" --max-time 10 http://${{ env.LB_URL }}/metrics 2>/dev/null || echo "000")
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✓ Metrics endpoint is accessible"
+          else
+            echo "⚠ Metrics endpoint returned HTTP $HTTP_CODE"
+          fi
+      
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "=== Final Deployment Summary ==="
+          echo "=========================================="
+          echo "Environment: ${{ env.DEPLOY_ENV }}"
+          echo "Cluster: ${{ env.EKS_CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Namespace: django-app-${{ env.DEPLOY_ENV }}"
+          echo "Application URL: ${LB_URL:-Pending}"
+          echo ""
+          echo "=== Django Resources (django-app-${{ env.DEPLOY_ENV }}) ==="
+          kubectl get all -n django-app-${{ env.DEPLOY_ENV }}
+          echo ""
+          echo "=== Monitoring Resources (monitoring) ==="
+          kubectl get all -n monitoring
+          echo ""
+          echo "=========================================="
+          echo "✓ Deployment Complete!"
+          echo "=========================================="

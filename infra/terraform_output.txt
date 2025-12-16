@@ -1,0 +1,19 @@
+configure_kubectl = "aws eks update-kubeconfig --region us-east-1 --name django-eks-cluster"
+docker_login_command = "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app"
+docker_push_command = "docker tag django-app:latest 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest && docker push 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest"
+ecr_repository_url = "718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app"
+eks_cluster_certificate_authority = <sensitive>
+eks_cluster_endpoint = "https://AFC04DDF33FAFC74C683E000F7759A17.gr7.us-east-1.eks.amazonaws.com"
+eks_cluster_name = "django-eks-cluster"
+private_subnet_ids = [
+  "subnet-05af3ead96573a345",
+  "subnet-0063c803f2e4f05a3",
+]
+public_subnet_ids = [
+  "subnet-01ddac9f359847d36",
+  "subnet-02a8424331c9cd6ae",
+]
+rds_address = "django-app-postgres.c4foywgea2nh.us-east-1.rds.amazonaws.com"
+rds_database_name = "finalexamdb"
+rds_endpoint = "django-app-postgres.c4foywgea2nh.us-east-1.rds.amazonaws.com:5432"
+vpc_id = "vpc-037829fb5773e54ed"

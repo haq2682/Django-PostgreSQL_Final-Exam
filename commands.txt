@@ -1,0 +1,15 @@
+Local Commands (In Order):
+terraform init
+terraform plan
+terraform apply
+terraform destroy -- just to clean up after testing, does not run while running the pipeline
+
+aws eks update-kubeconfig --region us-east-1 --name django-eks-cluster
+
+docker build -t django-app .
+docker tag django-app:latest 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app
+docker push 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest
+
+cd ansible
+ansible-playbook playbook.yaml -e "deploy_env=prod db_password=your_db_password"

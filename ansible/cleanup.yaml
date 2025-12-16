@@ -1,0 +1,51 @@
+---
+- name: Cleanup Kubernetes Resources
+  hosts: local
+  gather_facts: no
+
+  vars:
+    deploy_env: "dev"  # Change to 'prod' to cleanup production
+    k8s_namespace: "django-app-{{ deploy_env }}"
+
+  tasks: 
+    - name:  Confirm cleanup
+      pause:
+        prompt: "⚠️  You are about to delete namespace {{ k8s_namespace }}. Type 'yes' to continue"
+      register: confirm
+
+    - name: Abort if not confirmed
+      fail:
+        msg: "Cleanup cancelled by user"
+      when:  confirm.user_input != "yes"
+
+    - name: Get current resources
+      command: kubectl get all -n {{ k8s_namespace }}
+      register: resources
+      changed_when: false
+      failed_when: false
+
+    - name: Display resources to be deleted
+      debug:
+        var: resources.stdout_lines
+      when: resources.stdout is defined
+
+    - name: Delete namespace
+      command: kubectl delete namespace {{ k8s_namespace }}
+      register: cleanup_result
+      failed_when: false
+
+    - name: Display cleanup result
+      debug:
+        msg: "Namespace {{ k8s_namespace }} has been deleted"
+      when: cleanup_result.rc == 0
+
+    - name: Verify deletion
+      command: kubectl get namespace {{ k8s_namespace }}
+      register: verify_cleanup
+      changed_when:  false
+      failed_when: false
+
+    - name: Display verification
+      debug:
+        msg: "✅ Cleanup successful - namespace no longer exists"
+      when: verify_cleanup.rc != 0

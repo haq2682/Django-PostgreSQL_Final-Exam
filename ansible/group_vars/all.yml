@@ -1,0 +1,22 @@
+---
+# Global variables
+aws_region: us-east-1
+project_name: django-app
+k8s_namespace: django-app-prod
+
+# Docker/ECR settings
+ecr_repository: "718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app"
+docker_image_tag: latest
+
+# Database settings (from Terraform outputs)
+db_host: "django-app-postgres.c4foywgea2nh.us-east-1.rds.amazonaws.com"
+db_name: finalexamdb
+db_user: postgres
+db_password: "{{ lookup('env', 'DB_PASSWORD') | default('postgres') }}"
+db_port: 5432
+redis_host: redis-service
+redis_port: 6379
+
+# Application settings
+app_port: 5000
+replicas: 2

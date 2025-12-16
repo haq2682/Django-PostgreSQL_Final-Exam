@@ -1,0 +1,30 @@
+---
+- name: Switch Between Environments
+  hosts: local
+  gather_facts: no
+
+  vars:
+    target_env: "dev"  # or 'prod'
+
+  tasks: 
+    - name: Set context to target namespace
+      command: kubectl config set-context --current --namespace=django-app-{{ target_env }}
+      register:  context_switch
+
+    - name:  Verify current namespace
+      command: kubectl config view --minify -o jsonpath='{.. namespace}'
+      register: current_ns
+      changed_when: false
+
+    - name: Display current namespace
+      debug:
+        msg: "Current namespace: {{ current_ns.stdout }}"
+
+    - name: Show resources in namespace
+      command: kubectl get all -n django-app-{{ target_env }}
+      register: resources
+      changed_when: false
+
+    - name: Display resources
+      debug:
+        var: resources.stdout_lines

@@ -1,0 +1,264 @@
+---
+- name: Deploy Django Application to AWS EKS
+  hosts: local
+  gather_facts: yes
+
+  vars:
+    terraform_dir: "../infra"
+    k8s_manifests_dir: "../k8s"
+    deploy_env: "prod" # Change to 'prod' for production deployment
+    k8s_namespace: "django-app-{{ deploy_env }}"
+  
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg:
+          - "Deploying {{ project_name | default('django-app') }} to EKS"
+          - "Environment: {{ deploy_env }}"
+          - "Namespace: {{ k8s_namespace }}"
+          - "Region: {{ aws_region }}"
+
+    - name: Check if Terraform is initialized
+      stat:
+        path: "{{ terraform_dir }}/.terraform"
+      register: terraform_init
+
+    - name: Get Terraform outputs
+      shell: |
+        cd {{ terraform_dir }}
+        terraform output -json
+      register: terraform_output
+      changed_when: false
+      when: terraform_init.stat.exists
+
+    - name: Parse Terraform outputs
+      set_fact:
+        eks_cluster_name: "{{ (terraform_output.stdout | from_json).eks_cluster_name.value }}"
+        rds_address: "{{ (terraform_output.stdout | from_json).rds_address.value }}"
+        ecr_url: "{{ (terraform_output.stdout | from_json).ecr_repository_url.value }}"
+      when: terraform_output.stdout is defined
+
+    - name: Display extracted values
+      debug:
+        msg:
+          - "EKS Cluster: {{ eks_cluster_name }}"
+          - "RDS Address: {{ rds_address }}"
+          - "ECR URL: {{ ecr_url }}"
+      when: eks_cluster_name is defined
+
+    - name: Configure kubectl for EKS
+      shell: |
+        aws eks update-kubeconfig --region {{ aws_region }} --name {{ eks_cluster_name }}
+      when: eks_cluster_name is defined
+      changed_when: false
+
+    - name: Verify kubectl connection
+      command: kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+      failed_when: false
+
+    - name: Display cluster info
+      debug:
+        var: cluster_info.stdout_lines
+      when: cluster_info.stdout is defined
+
+    - name: Create namespaces
+      command: kubectl apply -f {{ k8s_manifests_dir }}/namespace.yaml
+      register: namespace_result
+
+    - name: Display namespace creation result
+      debug:
+        var: namespace_result.stdout_lines
+
+    - name: Update secrets with RDS host
+      shell: |
+        kubectl create secret generic db-credentials \
+          --from-literal=DB_NAME={{ db_name }} \
+          --from-literal=DB_USER={{ db_user }} \
+          --from-literal=DB_PASSWORD={{ db_password }} \
+          --from-literal=DB_HOST={{ rds_address }} \
+          --from-literal=DB_PORT={{ db_port }} \
+          --from-literal=REDIS_HOST={{ redis_host }} \
+          --from-literal=REDIS_PORT={{ redis_port }} \
+          --namespace={{ k8s_namespace }} \
+          --dry-run=client -o yaml | kubectl apply -f -
+      when: rds_address is defined
+      register: secret_result
+
+    - name: Display secret creation result
+      debug:
+        msg: "Secret db-credentials created/updated in {{ k8s_namespace }}"
+      when: secret_result is defined
+
+    - name: Apply ConfigMap
+      command: kubectl apply -f {{ k8s_manifests_dir }}/configmap.yaml
+      register: configmap_result
+
+    - name: Display ConfigMap result
+      debug:
+        var: configmap_result.stdout_lines
+
+    - name: Apply deployment (includes Redis and Django app)
+      shell: kubectl apply -f {{ k8s_manifests_dir }}/deployment-{{ deploy_env }}.yaml
+      register: deployment_result
+
+    - name: Display deployment result
+      debug:
+        var: deployment_result.stdout_lines
+
+    - name: Wait for Redis to be ready
+      shell: |
+        kubectl wait --for=condition=available --timeout=120s \
+          deployment/redis -n {{ k8s_namespace }}
+      register: redis_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display Redis status
+      debug:
+        msg: "Redis deployment is ready"
+      when: redis_status.rc == 0
+
+    - name: Wait for Django app to be ready
+      shell: |
+        kubectl wait --for=condition=available --timeout=300s \
+          deployment/django-app -n {{ k8s_namespace }}
+      register: deployment_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display Django app status
+      debug:
+        msg: "Django app deployment is ready"
+      when: deployment_status.rc == 0
+
+    - name: Get deployment status
+      command: kubectl get all -n {{ k8s_namespace }}
+      register: k8s_status
+      changed_when: false
+
+    - name: Display deployment status
+      debug:
+        var: k8s_status.stdout_lines
+
+    - name: Get first pod name
+      shell: |
+        kubectl get pods -n {{ k8s_namespace }} -l app={{ project_name }} \
+          -o jsonpath='{.items[0].metadata.name}'
+      register: pod_name
+      changed_when: false
+      failed_when: false
+      retries: 5
+      delay: 10
+      until: pod_name.stdout != ""
+
+    - name: Display pod name
+      debug:
+        msg: "Working with pod: {{ pod_name.stdout }}"
+      when: pod_name.stdout != ""
+
+    - name: Run Django makemigrations
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- python manage.py makemigrations
+      when: pod_name.stdout != ""
+      register: makemigrations_result
+      failed_when: false
+
+    - name: Display makemigrations result
+      debug:
+        var: makemigrations_result.stdout_lines
+      when: makemigrations_result.stdout is defined
+
+    - name: Apply Django migrations
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- python manage.py migrate
+      when: pod_name.stdout != ""
+      register: migrate_result
+
+    - name: Display migrate result
+      debug:
+        var: migrate_result.stdout_lines
+      when: migrate_result.stdout is defined
+
+    - name: Run Django makemigrations for cars app
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- python manage.py makemigrations cars
+      when: pod_name.stdout != ""
+      register: cars_makemigrations_result
+      failed_when: false
+
+    - name: Display cars makemigrations result
+      debug:
+        var: cars_makemigrations_result.stdout_lines
+      when: cars_makemigrations_result.stdout is defined
+
+    - name: Apply Django migrations for cars app
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- python manage.py migrate cars
+      when: pod_name.stdout != ""
+      register: cars_migrate_result
+      failed_when: false
+
+    - name: Display cars migrate result
+      debug:
+        var: cars_migrate_result.stdout_lines
+      when: cars_migrate_result.stdout is defined
+
+    - name: Insert initial data via Django management command
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- python manage.py load_init_data
+      when: pod_name.stdout != ""
+      register: load_data_result
+      failed_when: false
+
+    - name: Display load data result
+      debug:
+        var: load_data_result.stdout_lines
+      when: load_data_result.stdout is defined
+
+    - name: Test Redis connectivity from Django pod
+      shell: |
+        kubectl exec -n {{ k8s_namespace }} {{ pod_name.stdout }} -- \
+          python -c "import redis; r=redis.Redis(host='redis-service', port=6379); print('Redis Status:', r.ping())"
+      when: pod_name.stdout != ""
+      register: redis_test
+      failed_when: false
+
+    - name: Display Redis connectivity test
+      debug:
+        msg: "{{ redis_test.stdout }}"
+      when: redis_test.stdout is defined
+
+    - name: Get LoadBalancer URL
+      shell: |
+        kubectl get svc django-app-service -n {{ k8s_namespace }} \
+          -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+      register: lb_url
+      changed_when: false
+      failed_when: false
+      retries: 10
+      delay: 30
+      until: lb_url.stdout != ""
+
+    - name: Display application URL
+      debug:
+        msg: "Application will be available at: http://{{ lb_url.stdout }}"
+      when: lb_url.stdout != ""
+
+    - name: Deployment Summary
+      debug:
+        msg:
+          - "=========================================="
+          - "Deployment Summary"
+          - "=========================================="
+          - "Project: {{ project_name | default('django-app') }}"
+          - "Environment: {{ deploy_env }}"
+          - "Namespace: {{ k8s_namespace }}"
+          - "EKS Cluster: {{ eks_cluster_name | default('N/A') }}"
+          - "RDS Host: {{ rds_address | default('N/A') }}"
+          - "ECR URL: {{ ecr_url | default('N/A') }}"
+          - "Application URL: http://{{ lb_url.stdout | default('Pending...') }}"
+          - "Redis: Deployed and Connected"
+          - "Migrations: Applied"
+          - "=========================================="

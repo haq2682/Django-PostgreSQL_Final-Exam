@@ -415,7 +415,7 @@ jobs:
           done
       
       - name: Run Ansible playbook
-        run: ansible-playbook playbook.yaml -e "deploy_env=${{ env.DEPLOY_ENV }}"
+        run: ansible-playbook playbook.yaml -e "deploy_env=${{ env.DEPLOY_ENV }} db_password=${{ secrets.DB_PASSWORD }}"
         env: 
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           ANSIBLE_FORCE_COLOR: 'true'

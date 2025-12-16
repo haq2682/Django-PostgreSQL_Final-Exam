@@ -373,7 +373,7 @@ jobs:
       
       - name: Verify all.yml and validate
         run: |
-          if [ !-f all.yml ]; then
+          if [ ! -f all.yml ]; then
             echo "❌ Error: all.yml not found!"
             exit 1
           fi

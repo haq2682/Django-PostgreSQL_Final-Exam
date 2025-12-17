@@ -188,7 +188,7 @@ ALTER DATABASE carsdb OWNER TO carsadmin;
 
 ### Step 3: Clone Repository
 ```bash
-git clone https://github.com/haq2682/Django-PostgreSQL_Final-Exam.git
+git clone <repository-url>
 cd Django-PostgreSQL_Final-Exam
 ```
 
@@ -264,7 +264,7 @@ Docker Compose provides the easiest way to run the complete application stack lo
 
 ### Step 1: Clone Repository
 ```bash
-git clone https://github.com/haq2682/Django-PostgreSQL_Final-Exam.git
+git clone <repository-url>
 cd Django-PostgreSQL_Final-Exam
 ```
 
@@ -392,7 +392,7 @@ aws sts get-caller-identity
 
 ### Step 2: Clone Repository
 ```bash
-git clone https://github.com/haq2682/Django-PostgreSQL_Final-Exam.git
+git clone <repository-url>
 cd Django-PostgreSQL_Final-Exam
 ```
 
@@ -457,20 +457,21 @@ kubectl get nodes
 # Navigate back to project root
 cd ..
 
+# Get ECR repository URL from Terraform output
+ECR_URL=$(cd infra && terraform output -raw ecr_repository_url)
+
 # Get ECR login token
 aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin \
-  718533829649.dkr.ecr.us-east-1.amazonaws.com
+  docker login --username AWS --password-stdin $ECR_URL
 
-# Build image (replace with your ECR URL from terraform output)
+# Build image
 docker build -t django-app:latest . --no-cache
 
-# Tag image
-docker tag django-app:latest \
-  718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest
+# Tag image (replace <ecr-url> with your ECR URL from terraform output)
+docker tag django-app:latest $ECR_URL:latest
 
 # Push to ECR
-docker push 718533829649.dkr.ecr.us-east-1.amazonaws.com/django-app:latest
+docker push $ECR_URL:latest
 ```
 
 ### Step 7: Update Kubernetes Secrets
@@ -1231,9 +1232,7 @@ ansible-playbook --check         # Dry run
 
 ## 📞 Support and Contributing
 
-For issues, questions, or contributions:
-- **GitHub Issues:** [Create an issue](https://github.com/haq2682/Django-PostgreSQL_Final-Exam/issues)
-- **Pull Requests:** Contributions welcome!
+For issues, questions, or contributions, please refer to the project repository.
 
 ---
 

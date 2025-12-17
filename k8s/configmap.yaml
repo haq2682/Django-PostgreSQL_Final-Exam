@@ -6,7 +6,7 @@ metadata:
 data:
   ALLOWED_HOSTS: "*"
   DEBUG: "True"
-  ENVIRONMENT: "development"  # Changed from "production"
+  ENVIRONMENT: "development"
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -30,6 +30,61 @@ data:
       evaluation_interval: 15s
     
     scrape_configs:
+      # Node Exporter - Required for Dashboard 1860
+      - job_name: 'node-exporter'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            action: keep
+            regex: node-exporter
+          - source_labels: [__meta_kubernetes_pod_ip]
+            action: replace
+            target_label: __address__
+            regex: (.+)
+            replacement: ${1}:9100
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: instance
+      
+      # cAdvisor - Container metrics from kubelet
+      - job_name: 'cadvisor'
+        scheme: https
+        tls_config: 
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs: 
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+      
+      # Kubernetes nodes
+      - job_name: 'kubernetes-nodes'
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+      
+      # Kubernetes pods with prometheus annotations
       - job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
           - role: pod
@@ -46,14 +101,16 @@ data:
             regex: ([^:]+)(?::\d+)?;(\d+)
             replacement: $1:$2
             target_label: __address__
-      
-      - job_name: 'kubernetes-nodes'
-        kubernetes_sd_configs:
-          - role: node
-        relabel_configs:
           - action: labelmap
-            regex: __meta_kubernetes_node_label_(.+)
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            action: replace
+            target_label: kubernetes_namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            action: replace
+            target_label: kubernetes_pod_name
       
+      # Django app services
       - job_name: 'django-app'
         static_configs:
-          - targets: ['django-app-service.django-app-dev: 80', 'django-app-service.django-app-prod:80']
+          - targets: ['django-app-service.django-app-dev:80', 'django-app-service.django-app-prod:80']

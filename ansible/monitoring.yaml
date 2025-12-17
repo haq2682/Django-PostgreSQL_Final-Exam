@@ -4,7 +4,7 @@
   connection: local
   gather_facts: yes
   vars_files:
-    - all.yml
+    - group_vars/all.yml
 
   vars:
     monitoring_namespace: monitoring
@@ -61,6 +61,27 @@
       debug:
         var: configmap_result.stdout_lines
 
+    - name: Deploy Node Exporter DaemonSet
+      command: kubectl apply -f {{ k8s_manifests_dir }}/node-exporter.yaml
+      register: node_exporter_result
+
+    - name: Display Node Exporter result
+      debug:
+        var: node_exporter_result.stdout_lines
+
+    - name: Wait for Node Exporter to be ready
+      shell: |
+        kubectl rollout status daemonset/node-exporter -n {{ monitoring_namespace }} --timeout=120s
+      register: node_exporter_status
+      retries: 3
+      delay: 10
+      failed_when: false
+
+    - name: Display Node Exporter status
+      debug:
+        msg: "✓ Node Exporter DaemonSet is ready"
+      when: node_exporter_status.rc == 0
+
     - name: Apply monitoring deployment
       command: kubectl apply -f {{ k8s_manifests_dir }}/deployment-monitoring.yaml
       register: monitoring_result
@@ -93,6 +114,27 @@
         msg: "✓ Grafana is ready"
       when: grafana_status.rc == 0
 
+    - name: Restart Prometheus to pick up new config
+      shell: |
+        kubectl rollout restart deployment/prometheus -n {{ monitoring_namespace }}
+      register: prometheus_restart
+
+    - name: Wait for Prometheus restart to complete
+      shell: |
+        kubectl rollout status deployment/prometheus -n {{ monitoring_namespace }} --timeout=120s
+      register: prometheus_restart_status
+      failed_when: false
+
+    - name: Verify Node Exporter pods are running
+      shell: |
+        kubectl get pods -n {{ monitoring_namespace }} -l app=node-exporter -o wide
+      register: node_exporter_pods
+      changed_when: false
+
+    - name: Display Node Exporter pods
+      debug:
+        var: node_exporter_pods.stdout_lines
+
     - name: Get Prometheus LoadBalancer URL
       shell: |
         kubectl get svc prometheus-service -n {{ monitoring_namespace }} \
@@ -120,17 +162,37 @@
       register: grafana_password
       changed_when: false
 
+    - name: Verify Prometheus targets
+      shell: |
+        sleep 30
+        curl -s http://{{ prometheus_lb.stdout }}:9090/api/v1/targets | python3 -c "import sys,json; d=json.load(sys.stdin); print('Active targets:', len([t for t in d.get('data',{}).get('activeTargets',[]) if t.get('health')=='up']))"
+      register: prometheus_targets
+      changed_when: false
+      failed_when: false
+      when: prometheus_lb.stdout != ""
+
+    - name: Display Prometheus targets
+      debug:
+        var: prometheus_targets.stdout
+      when: prometheus_targets.stdout is defined
+
     - name: Monitoring Deployment Summary
       debug:
         msg:
           - "=========================================="
           - "Monitoring Stack Deployed Successfully"
           - "=========================================="
-          - "Prometheus URL: http://{{ prometheus_lb.stdout }}: 9090"
+          - "Prometheus URL: http://{{ prometheus_lb.stdout }}:9090"
           - "Grafana URL: http://{{ grafana_lb.stdout }}:3000"
           - "Grafana Username: admin"
           - "Grafana Password: {{ grafana_password.stdout }}"
           - "=========================================="
           - "Prometheus Targets: http://{{ prometheus_lb.stdout }}:9090/targets"
-          - "Prometheus Config: Monitoring both dev and prod namespaces"
+          - "=========================================="
+          - "To use Dashboard 1860 (Node Exporter Full):"
+          - "1.Open Grafana URL in browser"
+          - "2.Go to Dashboards -> Import"
+          - "3.Enter ID: 1860"
+          - "4.Select Prometheus datasource"
+          - "5.Click Import"
           - "=========================================="

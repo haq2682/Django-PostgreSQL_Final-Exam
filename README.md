@@ -1187,7 +1187,7 @@ kubectl get secret db-credentials -n django-app-prod -o yaml
 - [Ansible Documentation](https://docs.ansible.com/)
 
 ### Project URLs
-- **Live Application:** https://django-postgresqlmid-exam-production.up.railway.app
+- **Live Application:** http://a185cb36c33b14dc9a3f7066a7bb9493-1098725951.us-east-1.elb.amazonaws.com/cars/1/
 - **Sample Endpoints:**
   - View Car: `/cars/1`, `/cars/2`, `/cars/3`
   - Admin Panel: `/admin`
@@ -1228,18 +1228,5 @@ ansible-playbook -e "var=value"  # Pass variables
 ansible-playbook --check         # Dry run
 ```
 
----
-
-## 📞 Support and Contributing
-
-For issues, questions, or contributions, please refer to the project repository.
-
----
-
-## 📄 License
-
-This project is licensed under the terms specified in the LICENSE file.
-
----
 
 **Last Updated:** December 2024

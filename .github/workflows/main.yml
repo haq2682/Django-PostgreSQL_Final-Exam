@@ -11,10 +11,10 @@ env:
   EKS_CLUSTER_NAME: django-eks-cluster
   ECR_REPOSITORY: django-app
   DOCKER_IMAGE_TAG: ${{ github.sha }}
-  DEPLOY_ENV: prod  # Change to 'dev' for development deployment
+  DEPLOY_ENV: prod
 
 jobs:
-  validate-files:
+  validate-files: 
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +50,7 @@ jobs:
             "k8s/deployment-dev.yaml"
             "k8s/deployment-prod.yaml"
             "k8s/deployment-monitoring.yaml"
+            "k8s/node-exporter.yaml"
           )
           
           for file in "${required_k8s_files[@]}"; do
@@ -94,6 +95,16 @@ jobs:
             echo "✓ Required ConfigMaps found"
           else
             echo "❌ Missing required ConfigMaps"
+            exit 1
+          fi
+          
+          # Check node-exporter
+          echo "Checking node-exporter..."
+          if grep -q "app: node-exporter" k8s/node-exporter.yaml && \
+             grep -q "kind: DaemonSet" k8s/node-exporter.yaml; then
+            echo "✓ Node Exporter DaemonSet structure correct"
+          else
+            echo "❌ Node Exporter structure incorrect"
             exit 1
           fi
           
@@ -178,7 +189,7 @@ jobs:
       - run: |
           pip install flake8 bandit
           flake8 . --max-line-length=120 --exclude=migrations,venv || true
-          bandit -r . -x ./venv,./tests || true
+          bandit -r .-x ./venv,./tests || true
 
   test: 
     runs-on: ubuntu-latest
@@ -238,7 +249,6 @@ jobs:
         run: |
           echo "=== Setting up Terraform Backend ==="
           
-          # Check if S3 bucket exists, create if it doesn't
           if ! aws s3api head-bucket --bucket my-terraform-states-django-app-us-east-1 2>/dev/null; then
             echo "Creating S3 bucket for Terraform state..."
             aws s3api create-bucket \
@@ -264,7 +274,6 @@ jobs:
             echo "✓ S3 bucket already exists"
           fi
           
-          # Check if DynamoDB table exists, create if it doesn't
           if ! aws dynamodb describe-table --table-name terraform-locks --region us-east-1 2>/dev/null; then
             echo "Creating DynamoDB table for Terraform locks..."
             aws dynamodb create-table \
@@ -291,7 +300,6 @@ jobs:
         run: |
           echo "=== Checking for existing resources to import ==="
           
-          # Import ECR repository if it exists
           if aws ecr describe-repositories --repository-names django-app --region us-east-1 2>/dev/null; then
             echo "Importing ECR repository..."
             terraform import aws_ecr_repository.django_app django-app 2>/dev/null || echo "ECR already in state or import failed"
@@ -401,7 +409,6 @@ jobs:
           cat group_vars/all.yml
           echo ""
           
-          # Validate required variables
           required_vars=("aws_region" "project_name" "db_name" "db_user" "db_host" "redis_host")
           for var in "${required_vars[@]}"; do
             if grep -q "^${var}:" group_vars/all.yml; then
@@ -421,6 +428,7 @@ jobs:
             "namespace.yaml"
             "configmap.yaml"
             "deployment-${{ env.DEPLOY_ENV }}.yaml"
+            "node-exporter.yaml"
           )
           
           for file in "${required_files[@]}"; do
@@ -443,7 +451,6 @@ jobs:
           echo "=== Verifying Django deployment ==="
           kubectl get all -n django-app-${{ env.DEPLOY_ENV }}
           
-          # Check if deployments are ready
           kubectl wait --for=condition=available --timeout=300s \
             deployment/django-app -n django-app-${{ env.DEPLOY_ENV }} || true
           kubectl wait --for=condition=available --timeout=120s \
@@ -486,14 +493,22 @@ jobs:
       
       - name: Verify monitoring K8s files
         run: |
-          echo "Checking monitoring deployment file..."
-          if [ ! -f "../k8s/deployment-monitoring.yaml" ]; then
-            echo "❌ Missing: ../k8s/deployment-monitoring.yaml"
-            exit 1
-          fi
-          echo "✓ Found: ../k8s/deployment-monitoring.yaml"
+          echo "Checking monitoring deployment files..."
           
-          # Verify it contains required resources
+          required_files=(
+            "../k8s/deployment-monitoring.yaml"
+            "../k8s/node-exporter.yaml"
+          )
+          
+          for file in "${required_files[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing: $file"
+              exit 1
+            fi
+            echo "✓ Found: $file"
+          done
+          
+          # Verify deployment-monitoring.yaml contains required resources
           if grep -q "app: prometheus" ../k8s/deployment-monitoring.yaml && \
              grep -q "app: grafana" ../k8s/deployment-monitoring.yaml; then
             echo "✓ Monitoring deployment file structure correct"
@@ -501,10 +516,19 @@ jobs:
             echo "❌ Monitoring deployment file missing required resources"
             exit 1
           fi
+          
+          # Verify node-exporter.yaml contains DaemonSet
+          if grep -q "kind: DaemonSet" ../k8s/node-exporter.yaml && \
+             grep -q "app: node-exporter" ../k8s/node-exporter.yaml; then
+            echo "✓ Node Exporter file structure correct"
+          else
+            echo "❌ Node Exporter file missing required resources"
+            exit 1
+          fi
       
       - name: Deploy Monitoring Stack
         run: ansible-playbook monitoring.yaml
-        env:
+        env: 
           ANSIBLE_FORCE_COLOR: 'true'
       
       - name: Verify monitoring deployment
@@ -512,11 +536,15 @@ jobs:
           echo "=== Verifying Monitoring deployment ==="
           kubectl get all -n monitoring
           
-          # Check if deployments are ready
           kubectl wait --for=condition=available --timeout=180s \
             deployment/prometheus -n monitoring || true
           kubectl wait --for=condition=available --timeout=180s \
             deployment/grafana -n monitoring || true
+          
+          echo ""
+          echo "=== Verifying Node Exporter DaemonSet ==="
+          kubectl rollout status daemonset/node-exporter -n monitoring --timeout=120s || true
+          kubectl get pods -n monitoring -l app=node-exporter -o wide
 
   verify-monitoring: 
     runs-on: ubuntu-latest
@@ -540,6 +568,23 @@ jobs:
       - name: Configure kubectl
         run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
       
+      - name: Verify Node Exporter is running
+        run: |
+          echo "=== Node Exporter Status ==="
+          kubectl get daemonset node-exporter -n monitoring
+          kubectl get pods -n monitoring -l app=node-exporter -o wide
+          
+          # Count expected vs actual pods
+          DESIRED=$(kubectl get daemonset node-exporter -n monitoring -o jsonpath='{.status.desiredNumberScheduled}')
+          READY=$(kubectl get daemonset node-exporter -n monitoring -o jsonpath='{.status.numberReady}')
+          echo "Node Exporter: $READY/$DESIRED pods ready"
+          
+          if [ "$READY" -eq "$DESIRED" ] && [ "$DESIRED" -gt 0 ]; then
+            echo "✓ Node Exporter is running on all nodes"
+          else
+            echo "⚠ Node Exporter not fully ready yet"
+          fi
+      
       - name: Wait for monitoring services
         run: |
           echo "=== Waiting for monitoring services ==="
@@ -557,6 +602,48 @@ jobs:
             echo "Waiting for LoadBalancers... (attempt $i/20)"
             sleep 15
           done
+      
+      - name: Verify Prometheus targets
+        if: env.PROM_URL != ''
+        run: |
+          echo "Waiting for Prometheus to scrape targets..."
+          sleep 45
+          
+          echo "=== Checking Prometheus Targets ==="
+          curl -s "http://${{ env.PROM_URL }}:9090/api/v1/targets" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              targets = data.get('data', {}).get('activeTargets', [])
+              print(f'Total active targets: {len(targets)}')
+              print('')
+              jobs = {}
+              for t in targets:
+                  job = t.get('labels', {}).get('job', 'unknown')
+                  health = t.get('health', 'unknown')
+                  if job not in jobs:
+                      jobs[job] = {'up': 0, 'down': 0}
+                  if health == 'up':
+                      jobs[job]['up'] += 1
+                  else: 
+                      jobs[job]['down'] += 1
+              
+              print('Targets by job:')
+              for job, counts in jobs.items():
+                  status = '✓' if counts['down'] == 0 else '⚠'
+                  print(f\"  {status} {job}: {counts['up']} up, {counts['down']} down\")
+              
+              # Check specifically for node-exporter
+              node_exporter_up = jobs.get('node-exporter', {}).get('up', 0)
+              if node_exporter_up > 0:
+                  print(f'')
+                  print(f'✓ Node Exporter is being scraped ({node_exporter_up} targets)')
+              else:
+                  print(f'')
+                  print(f'⚠ Node Exporter targets not found yet')
+          except Exception as e:
+              print(f'Error parsing targets: {e}')
+          " || echo "Could not fetch targets"
       
       - name: Verify Prometheus
         if: env.PROM_URL != ''
@@ -594,11 +681,8 @@ jobs:
           echo "=========================================="
           kubectl get all -n monitoring
           echo ""
-          echo "=== Prometheus Details ==="
-          kubectl describe svc prometheus-service -n monitoring
-          echo ""
-          echo "=== Grafana Details ==="
-          kubectl describe svc grafana-service -n monitoring
+          echo "=== Node Exporter Pods ==="
+          kubectl get pods -n monitoring -l app=node-exporter -o wide
           echo ""
           echo "=== Prometheus Pods ==="
           kubectl get pods -n monitoring -l app=prometheus -o wide
@@ -688,6 +772,10 @@ jobs:
       - name: Deployment summary
         if: always()
         run: |
+          PROM_URL=$(kubectl get svc prometheus-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          GRAFANA_URL=$(kubectl get svc grafana-service -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "pending")
+          GRAFANA_PASS=$(kubectl get secret grafana-credentials -n monitoring -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 --decode || echo "admin123")
+          
           echo "=========================================="
           echo "=== Final Deployment Summary ==="
           echo "=========================================="
@@ -695,12 +783,25 @@ jobs:
           echo "Cluster: ${{ env.EKS_CLUSTER_NAME }}"
           echo "Region: ${{ env.AWS_REGION }}"
           echo "Namespace: django-app-${{ env.DEPLOY_ENV }}"
-          echo "Application URL: ${LB_URL:-Pending}"
+          echo "Application URL: http://${LB_URL:-Pending}"
           echo ""
-          echo "=== Django Resources (django-app-${{ env.DEPLOY_ENV }}) ==="
+          echo "=== Monitoring URLs ==="
+          echo "Prometheus: http://${PROM_URL}:9090"
+          echo "Prometheus Targets: http://${PROM_URL}:9090/targets"
+          echo "Grafana: http://${GRAFANA_URL}:3000"
+          echo "Grafana Login: admin/${GRAFANA_PASS}"
+          echo ""
+          echo "=== Dashboard 1860 Setup ==="
+          echo "1.Open Grafana URL"
+          echo "2.Go to Dashboards -> Import"
+          echo "3.Enter ID: 1860"
+          echo "4.Select Prometheus datasource"
+          echo "5.Click Import"
+          echo ""
+          echo "=== Django Resources ==="
           kubectl get all -n django-app-${{ env.DEPLOY_ENV }}
           echo ""
-          echo "=== Monitoring Resources (monitoring) ==="
+          echo "=== Monitoring Resources ==="
           kubectl get all -n monitoring
           echo ""
           echo "=========================================="

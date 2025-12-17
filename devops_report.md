@@ -936,14 +936,14 @@ echo "Password: $GRAFANA_PASSWORD"
 #### Grafana Dashboard Setup
 
 1. **Login to Grafana**
-   - URL: http://<GRAFANA_URL>:3000
+   - URL: http://ac2d24a452869429795f2e13c4a61839-201664804.us-east-1.elb.amazonaws.com:3000/
    - Username: admin
    - Password: (from secret)
 
 2. **Add Prometheus Data Source**
    - Configuration → Data Sources → Add data source
    - Select: Prometheus
-   - URL: http://prometheus-service:9090
+   - URL: http://a640ca3cc742c49abbabb6ff778f01ab-135368349.us-east-1.elb.amazonaws.com:9090
    - Save & Test
 
 3. **Import Django Dashboard**

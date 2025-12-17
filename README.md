@@ -189,7 +189,7 @@ ALTER DATABASE carsdb OWNER TO carsadmin;
 ### Step 3: Clone Repository
 ```bash
 git clone <repository-url>
-cd Django-PostgreSQL_Final-Exam
+cd <repository-directory>
 ```
 
 ### Step 4: Set Up Python Virtual Environment
@@ -265,7 +265,7 @@ Docker Compose provides the easiest way to run the complete application stack lo
 ### Step 1: Clone Repository
 ```bash
 git clone <repository-url>
-cd Django-PostgreSQL_Final-Exam
+cd <repository-directory>
 ```
 
 ### Step 2: Create Environment File
@@ -393,7 +393,7 @@ aws sts get-caller-identity
 ### Step 2: Clone Repository
 ```bash
 git clone <repository-url>
-cd Django-PostgreSQL_Final-Exam
+cd <repository-directory>
 ```
 
 ### Step 3: Review and Update Infrastructure Variables

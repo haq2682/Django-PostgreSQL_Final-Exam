@@ -357,8 +357,8 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           echo "Pushing Docker image to ECR..."
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY: $DOCKER_IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY: latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "✓ Docker image pushed successfully"
           echo "Image: $ECR_REGISTRY/$ECR_REPOSITORY:$DOCKER_IMAGE_TAG"
 

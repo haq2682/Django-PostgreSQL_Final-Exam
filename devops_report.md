@@ -1,9 +1,6 @@
 # DevOps Report - Django PostgreSQL Production Deployment
 
 **Project:** Enterprise Django Application with Multi-Environment Infrastructure  
-**Author:** DevOps Team  
-**Last Updated:** December 2024
-
 ---
 
 ## Table of Contents
@@ -1618,4 +1615,3 @@ This DevOps implementation demonstrates enterprise-grade practices for deploying
 
 **Project Repository:** https://github.com/haq2682/Django-PostgreSQL_Final-Exam  
 **Documentation:** README.md  
-**Last Updated:** December 2024
